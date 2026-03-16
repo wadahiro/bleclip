@@ -72,12 +72,20 @@ class ClipboardMonitor {
         }
 
         if let pngData = imageData {
-            // Skip images over 1MB to avoid BLE transfer timeout
-            if pngData.count > 1_000_000 {
-                Logger.info("Image too large for BLE transfer (\(pngData.count / 1024)KB), skipping")
+            // Compress as JPEG for BLE transfer (much smaller than PNG for photos/screenshots)
+            let transferData: Data
+            if let jpegData = Self.compressToJPEG(pngData, quality: 0.7) {
+                Logger.debug("Image compressed: \(pngData.count / 1024)KB PNG -> \(jpegData.count / 1024)KB JPEG")
+                transferData = jpegData
             } else {
-                Logger.debug("Clipboard change detected: image (\(pngData.count) bytes)")
-                return .image(pngData)
+                transferData = pngData
+            }
+
+            if transferData.count > 1_000_000 {
+                Logger.info("Image too large for BLE transfer (\(transferData.count / 1024)KB after compression), skipping")
+            } else {
+                Logger.debug("Clipboard change detected: image (\(transferData.count) bytes)")
+                return .image(transferData)
             }
         }
 
@@ -108,6 +116,16 @@ class ClipboardMonitor {
         }
 
         lastChangeCount = pb.changeCount
+    }
+}
+
+extension ClipboardMonitor {
+    /// Compress PNG/TIFF image data to JPEG for smaller BLE transfer
+    static func compressToJPEG(_ imageData: Data, quality: Double) -> Data? {
+        guard let image = NSImage(data: imageData),
+              let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality])
     }
 }
 
