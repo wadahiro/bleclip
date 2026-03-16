@@ -29,12 +29,12 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
             return
         }
 
-        let mtu = peripheral.maximumWriteValueLength(for: .withResponse)
+        let mtu = peripheral.maximumWriteValueLength(for: .withoutResponse)
         let chunks = ChunkProtocol.encode(data, mtu: mtu)
         Logger.debug("Central: sending \(chunks.count) chunk(s) via write (MTU=\(mtu), total=\(data.count)B)")
 
         for chunk in chunks {
-            peripheral.writeValue(chunk, for: characteristic, type: .withResponse)
+            peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
         }
     }
 
