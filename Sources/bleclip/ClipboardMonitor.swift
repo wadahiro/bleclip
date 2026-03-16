@@ -58,11 +58,24 @@ class ClipboardMonitor {
         }
 
         let pb = NSPasteboard.general
+        let types = pb.types ?? []
+        Logger.debug("Clipboard types: \(types.map { $0.rawValue })")
 
         // Check for image first (higher priority)
-        if let tiffData = pb.data(forType: .tiff) {
+        // macOS screenshots may use .png, .tiff, or both
+        var imageData: Data? = nil
+        if let pngData = pb.data(forType: .png) {
+            imageData = pngData
+        } else if let tiffData = pb.data(forType: .tiff) {
             let image = NSImage(data: tiffData)
-            if let pngData = image?.pngData() {
+            imageData = image?.pngData()
+        }
+
+        if let pngData = imageData {
+            // Skip images over 1MB to avoid BLE transfer timeout
+            if pngData.count > 1_000_000 {
+                Logger.info("Image too large for BLE transfer (\(pngData.count / 1024)KB), skipping")
+            } else {
                 Logger.debug("Clipboard change detected: image (\(pngData.count) bytes)")
                 return .image(pngData)
             }
