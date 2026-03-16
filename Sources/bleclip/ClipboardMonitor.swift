@@ -1,13 +1,19 @@
 import AppKit
 
+enum MessageType: UInt8 {
+    case text = 0x01
+    case image = 0x02
+    case handshake = 0x10
+}
+
 enum ClipboardContent {
     case text(String)
-    case image(Data) // PNG data
+    case image(Data) // JPEG data
 
     var typeTag: UInt8 {
         switch self {
-        case .text: return 0x01
-        case .image: return 0x02
+        case .text: return MessageType.text.rawValue
+        case .image: return MessageType.image.rawValue
         }
     }
 
@@ -16,8 +22,8 @@ enum ClipboardContent {
         switch self {
         case .text(let str):
             data.append(Data(str.utf8))
-        case .image(let pngData):
-            data.append(pngData)
+        case .image(let imgData):
+            data.append(imgData)
         }
         return data
     }
@@ -27,14 +33,44 @@ enum ClipboardContent {
         let tag = data[0]
         let payload = data.subdata(in: 1..<data.count)
         switch tag {
-        case 0x01:
+        case MessageType.text.rawValue:
             guard let str = String(data: payload, encoding: .utf8) else { return nil }
             return .text(str)
-        case 0x02:
+        case MessageType.image.rawValue:
             return .image(payload)
         default:
             return nil
         }
+    }
+}
+
+enum Message {
+    case clipboard(ClipboardContent)
+    case handshake
+
+    static let handshakePayload = "bleclip-hello"
+
+    func toData() -> Data {
+        switch self {
+        case .clipboard(let content):
+            return content.toData()
+        case .handshake:
+            var data = Data([MessageType.handshake.rawValue])
+            data.append(Data(Self.handshakePayload.utf8))
+            return data
+        }
+    }
+
+    static func fromData(_ data: Data) -> Message? {
+        guard !data.isEmpty else { return nil }
+        let tag = data[0]
+        if tag == MessageType.handshake.rawValue {
+            return .handshake
+        }
+        if let content = ClipboardContent.fromData(data) {
+            return .clipboard(content)
+        }
+        return nil
     }
 }
 
