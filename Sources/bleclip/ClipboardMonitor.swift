@@ -1,17 +1,53 @@
 import AppKit
 
+enum ClipboardContent {
+    case text(String)
+    case image(Data) // PNG data
+
+    var typeTag: UInt8 {
+        switch self {
+        case .text: return 0x01
+        case .image: return 0x02
+        }
+    }
+
+    func toData() -> Data {
+        var data = Data([typeTag])
+        switch self {
+        case .text(let str):
+            data.append(Data(str.utf8))
+        case .image(let pngData):
+            data.append(pngData)
+        }
+        return data
+    }
+
+    static func fromData(_ data: Data) -> ClipboardContent? {
+        guard !data.isEmpty else { return nil }
+        let tag = data[0]
+        let payload = data.subdata(in: 1..<data.count)
+        switch tag {
+        case 0x01:
+            guard let str = String(data: payload, encoding: .utf8) else { return nil }
+            return .text(str)
+        case 0x02:
+            return .image(payload)
+        default:
+            return nil
+        }
+    }
+}
+
 class ClipboardMonitor {
     private var lastChangeCount: Int
-    private var lastContent: String?
     private var suppressNextChange: Bool = false
 
     init() {
         lastChangeCount = NSPasteboard.general.changeCount
-        lastContent = NSPasteboard.general.string(forType: .string)
     }
 
-    /// Returns the new clipboard text if it changed, nil otherwise.
-    func checkForChange() -> String? {
+    /// Returns new clipboard content if changed, nil otherwise.
+    func checkForChange() -> ClipboardContent? {
         let currentCount = NSPasteboard.general.changeCount
         guard currentCount != lastChangeCount else { return nil }
         lastChangeCount = currentCount
@@ -21,19 +57,51 @@ class ClipboardMonitor {
             return nil
         }
 
-        guard let text = NSPasteboard.general.string(forType: .string) else { return nil }
-        guard text != lastContent else { return nil }
-        lastContent = text
-        return text
+        let pb = NSPasteboard.general
+
+        // Check for image first (higher priority)
+        if let tiffData = pb.data(forType: .tiff) {
+            let image = NSImage(data: tiffData)
+            if let pngData = image?.pngData() {
+                Logger.debug("Clipboard change detected: image (\(pngData.count) bytes)")
+                return .image(pngData)
+            }
+        }
+
+        // Fall back to text
+        if let text = pb.string(forType: .string) {
+            Logger.debug("Clipboard change detected: text (\(text.count) chars)")
+            return .text(text)
+        }
+
+        return nil
     }
 
-    /// Sets the local clipboard content. Suppresses the next change detection to prevent echo.
-    func setClipboard(_ text: String) {
+    /// Sets the local clipboard. Suppresses the next change detection to prevent echo.
+    func setClipboard(_ content: ClipboardContent) {
         suppressNextChange = true
-        lastContent = text
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        lastChangeCount = NSPasteboard.general.changeCount
-        Logger.debug("Local clipboard set: \(text.prefix(80))...")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+
+        switch content {
+        case .text(let str):
+            pb.setString(str, forType: .string)
+            Logger.debug("Local clipboard set: text (\(str.count) chars)")
+        case .image(let pngData):
+            if let image = NSImage(data: pngData) {
+                pb.writeObjects([image])
+                Logger.debug("Local clipboard set: image (\(pngData.count) bytes)")
+            }
+        }
+
+        lastChangeCount = pb.changeCount
+    }
+}
+
+private extension NSImage {
+    func pngData() -> Data? {
+        guard let tiffData = tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 }

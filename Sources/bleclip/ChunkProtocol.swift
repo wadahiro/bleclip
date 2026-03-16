@@ -4,16 +4,15 @@ import Foundation
 // [0]     flags       - bit0: isFirst, bit1: isLast
 // [1..2]  sequenceId  - random per transfer session
 // [3..4]  chunkIndex  - 0-based chunk number
-// [5..]   payload     - UTF-8 text fragment
+// [5..]   payload     - raw bytes (text or image fragment)
 
 struct ChunkProtocol {
 
-    static func encode(_ text: String, mtu: Int = BLEConstants.defaultMTU) -> [Data] {
-        let payload = Data(text.utf8)
+    static func encode(_ data: Data, mtu: Int = BLEConstants.defaultMTU) -> [Data] {
         let maxPayload = max(mtu - BLEConstants.chunkHeaderSize, 1)
         let sequenceId = UInt16.random(in: 0...UInt16.max)
 
-        if payload.isEmpty {
+        if data.isEmpty {
             return [makeChunk(flags: 0x03, sequenceId: sequenceId, chunkIndex: 0, payload: Data())]
         }
 
@@ -21,13 +20,13 @@ struct ChunkProtocol {
         var offset = 0
         var chunkIndex: UInt16 = 0
 
-        while offset < payload.count {
-            let end = min(offset + maxPayload, payload.count)
-            let fragment = payload[offset..<end]
+        while offset < data.count {
+            let end = min(offset + maxPayload, data.count)
+            let fragment = data[offset..<end]
 
             var flags: UInt8 = 0
             if offset == 0 { flags |= 0x01 }           // isFirst
-            if end == payload.count { flags |= 0x02 }   // isLast
+            if end == data.count { flags |= 0x02 }      // isLast
 
             chunks.append(makeChunk(flags: flags, sequenceId: sequenceId, chunkIndex: chunkIndex, payload: fragment))
             offset = end
@@ -52,7 +51,7 @@ class ChunkReassembler {
     private var chunks: [UInt16: Data] = [:]
     private var expectedLast: UInt16?
 
-    func receive(_ data: Data) -> String? {
+    func receive(_ data: Data) -> Data? {
         guard data.count >= BLEConstants.chunkHeaderSize else {
             Logger.debug("Received chunk too small: \(data.count) bytes")
             return nil
@@ -104,7 +103,7 @@ class ChunkReassembler {
                 chunks.removeAll()
                 expectedLast = nil
 
-                return String(data: assembled, encoding: .utf8)
+                return assembled
             }
         }
 

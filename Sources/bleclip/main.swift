@@ -38,7 +38,6 @@ class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
     let centralManager = BLECentralManager()
     private var pollTimer: Timer?
 
-    // Track connection state to decide which path to send on
     private var centralConnected = false
     private var peripheralConnected = false
 
@@ -49,43 +48,56 @@ class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
         Logger.info("Starting bleclip...")
         Logger.info("Waiting for another bleclip instance nearby...")
 
-        // Poll clipboard every 1 second
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             self?.checkClipboard()
         }
     }
 
     private func checkClipboard() {
-        guard let newText = clipboardMonitor.checkForChange() else { return }
-        Logger.debug("Clipboard changed (\(newText.count) chars): \(newText.prefix(80))...")
-        sendToRemote(newText)
+        guard let content = clipboardMonitor.checkForChange() else { return }
+        let data = content.toData()
+        switch content {
+        case .text(let str):
+            Logger.info("Sending text (\(str.count) chars)")
+        case .image(let imgData):
+            Logger.info("Sending image (\(imgData.count) bytes)")
+        }
+        sendToRemote(data)
     }
 
-    private func sendToRemote(_ text: String) {
+    private func sendToRemote(_ data: Data) {
         if centralConnected {
-            centralManager.sendClipboard(text)
+            centralManager.sendData(data)
         }
         if peripheralConnected {
-            peripheralManager.sendClipboard(text)
+            peripheralManager.sendData(data)
         }
     }
 
-    private func receiveFromRemote(_ text: String) {
-        clipboardMonitor.setClipboard(text)
-        Logger.info("Clipboard received (\(text.count) chars)")
+    private func receiveFromRemote(_ data: Data) {
+        guard let content = ClipboardContent.fromData(data) else {
+            Logger.debug("Failed to decode received clipboard data")
+            return
+        }
+        clipboardMonitor.setClipboard(content)
+        switch content {
+        case .text(let str):
+            Logger.info("Received text (\(str.count) chars)")
+        case .image(let imgData):
+            Logger.info("Received image (\(imgData.count) bytes)")
+        }
     }
 
     private func updateConnectionStatus() {
-        let connected = centralConnected || peripheralConnected
-        if connected {
+        if centralConnected || peripheralConnected {
             Logger.info("Connected - clipboard sharing active")
         }
     }
 
     // MARK: - PeripheralManagerDelegate
 
-    func peripheralDidReceiveClipboard(_ text: String) {
-        receiveFromRemote(text)
+    func peripheralDidReceiveClipboard(_ data: Data) {
+        receiveFromRemote(data)
     }
 
     func peripheralDidConnect() {
@@ -100,20 +112,18 @@ class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
 
     // MARK: - CentralManagerDelegate
 
-    func centralDidReceiveClipboard(_ text: String) {
-        receiveFromRemote(text)
+    func centralDidReceiveClipboard(_ data: Data) {
+        receiveFromRemote(data)
     }
 
     func centralDidConnect() {
         centralConnected = true
-        // Stop advertising when we connect as Central to avoid duplicate connections
         peripheralManager.stopAdvertising()
         updateConnectionStatus()
     }
 
     func centralDidDisconnect() {
         centralConnected = false
-        // Resume advertising since Central connection is lost
         peripheralManager.startAdvertising()
         Logger.info("Central connection lost. Waiting for reconnection...")
     }
@@ -135,5 +145,4 @@ signal(SIGTERM) { _ in
 let coordinator = AppCoordinator()
 coordinator.start()
 
-// CoreBluetooth requires RunLoop
 RunLoop.main.run()

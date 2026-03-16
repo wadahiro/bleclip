@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 
 protocol CentralManagerDelegate: AnyObject {
-    func centralDidReceiveClipboard(_ text: String)
+    func centralDidReceiveClipboard(_ data: Data)
     func centralDidConnect()
     func centralDidDisconnect()
 }
@@ -23,15 +23,15 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
 
     // MARK: - Public
 
-    func sendClipboard(_ text: String) {
+    func sendData(_ data: Data) {
         guard let peripheral = discoveredPeripheral, let characteristic = clipCharacteristic else {
             Logger.debug("Central: no connection, cannot send")
             return
         }
 
         let mtu = peripheral.maximumWriteValueLength(for: .withResponse)
-        let chunks = ChunkProtocol.encode(text, mtu: mtu)
-        Logger.debug("Central: sending \(chunks.count) chunk(s) via write (MTU=\(mtu))")
+        let chunks = ChunkProtocol.encode(data, mtu: mtu)
+        Logger.debug("Central: sending \(chunks.count) chunk(s) via write (MTU=\(mtu), total=\(data.count)B)")
 
         for chunk in chunks {
             peripheral.writeValue(chunk, for: characteristic, type: .withResponse)
@@ -84,7 +84,6 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         Logger.info("Failed to connect: \(error?.localizedDescription ?? "unknown")")
         discoveredPeripheral = nil
         clipCharacteristic = nil
-        // Retry after delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.startScanning()
         }
@@ -95,7 +94,6 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         discoveredPeripheral = nil
         clipCharacteristic = nil
         delegate?.centralDidDisconnect()
-        // Reconnect after delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.startScanning()
         }
@@ -122,9 +120,9 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard let data = characteristic.value else { return }
-        if let text = reassembler.receive(data) {
-            Logger.debug("Central: received complete clipboard (\(text.count) chars)")
-            delegate?.centralDidReceiveClipboard(text)
+        if let assembled = reassembler.receive(data) {
+            Logger.debug("Central: received complete data (\(assembled.count) bytes)")
+            delegate?.centralDidReceiveClipboard(assembled)
         }
     }
 
