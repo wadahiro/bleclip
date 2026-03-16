@@ -12,6 +12,7 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     private var discoveredPeripheral: CBPeripheral?
     private var clipCharacteristic: CBCharacteristic?
     private let reassembler = ChunkReassembler()
+    private var pendingChunks: [Data] = []
 
     weak var delegate: CentralManagerDelegate?
     var isConnected: Bool { discoveredPeripheral?.state == .connected && clipCharacteristic != nil }
@@ -24,18 +25,32 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
     // MARK: - Public
 
     func sendData(_ data: Data) {
-        guard let peripheral = discoveredPeripheral, let characteristic = clipCharacteristic else {
+        guard let peripheral = discoveredPeripheral, clipCharacteristic != nil else {
             Logger.debug("Central: no connection, cannot send")
             return
         }
 
         let mtu = peripheral.maximumWriteValueLength(for: .withoutResponse)
         let chunks = ChunkProtocol.encode(data, mtu: mtu)
-        Logger.debug("Central: sending \(chunks.count) chunk(s) via write (MTU=\(mtu), total=\(data.count)B)")
+        Logger.debug("Central: sending \(chunks.count) chunk(s) (MTU=\(mtu), total=\(data.count)B)")
 
-        for chunk in chunks {
+        pendingChunks.append(contentsOf: chunks)
+        drainPendingChunks()
+    }
+
+    private func drainPendingChunks() {
+        guard let peripheral = discoveredPeripheral, let characteristic = clipCharacteristic else { return }
+
+        while !pendingChunks.isEmpty {
+            guard peripheral.canSendWriteWithoutResponse else {
+                Logger.debug("Central: BLE buffer full, \(pendingChunks.count) chunks pending")
+                // peripheralIsReady(toSendWriteWithoutResponse:) will be called when ready
+                return
+            }
+            let chunk = pendingChunks.removeFirst()
             peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
         }
+        Logger.debug("Central: all chunks sent")
     }
 
     func startScanning() {
@@ -84,6 +99,7 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         Logger.info("Failed to connect: \(error?.localizedDescription ?? "unknown")")
         discoveredPeripheral = nil
         clipCharacteristic = nil
+        pendingChunks.removeAll()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.startScanning()
         }
@@ -93,6 +109,7 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         Logger.info("Disconnected from peripheral")
         discoveredPeripheral = nil
         clipCharacteristic = nil
+        pendingChunks.removeAll()
         delegate?.centralDidDisconnect()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.startScanning()
@@ -131,5 +148,10 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         if let error = error {
             Logger.debug("Central: write error: \(error.localizedDescription)")
         }
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        Logger.debug("Central: ready to send, \(pendingChunks.count) chunks pending")
+        drainPendingChunks()
     }
 }
