@@ -4,10 +4,18 @@ import AppKit
 // MARK: - CLI Argument Parsing
 
 var debugMode = false
-for arg in CommandLine.arguments.dropFirst() {
+var secureMode = false
+var args = Array(CommandLine.arguments.dropFirst())
+
+// Parse flags
+args = args.filter { arg in
     switch arg {
     case "--debug", "-d":
         debugMode = true
+        return false
+    case "--secure", "-s":
+        secureMode = true
+        return false
     case "--help", "-h":
         print("""
         bleclip - BLE Clipboard Sharing for macOS
@@ -15,9 +23,10 @@ for arg in CommandLine.arguments.dropFirst() {
         Share clipboard between two Macs via Bluetooth Low Energy.
         No IP address needed. Just run bleclip on both Macs.
 
-        Usage: bleclip [--debug/-d] [--help/-h]
+        Usage: bleclip [--secure/-s] [--debug/-d] [--help/-h]
 
         Options:
+          --secure, -s   Encrypt clipboard data with a shared password
           --debug, -d    Enable verbose debug logging
           --help, -h     Show this help message
         """)
@@ -30,22 +39,56 @@ for arg in CommandLine.arguments.dropFirst() {
 
 Logger.debugEnabled = debugMode
 
+// Read password if secure mode
+var password: Data? = nil
+if secureMode {
+    print("Password: ", terminator: "")
+    // Disable echo for password input
+    var oldTermios = termios()
+    tcgetattr(STDIN_FILENO, &oldTermios)
+    var newTermios = oldTermios
+    newTermios.c_lflag &= ~UInt(ECHO)
+    tcsetattr(STDIN_FILENO, TCSANOW, &newTermios)
+
+    if let line = readLine() {
+        password = Data(line.utf8)
+    }
+
+    // Restore terminal
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldTermios)
+    print() // newline after password
+
+    guard let pw = password, !pw.isEmpty else {
+        fputs("Error: password cannot be empty\n", stderr)
+        exit(1)
+    }
+    Logger.info("Secure mode enabled")
+}
+
 // MARK: - App Coordinator
 
 class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
     let clipboardMonitor = ClipboardMonitor()
     let peripheralManager = BLEPeripheralManager()
     let centralManager = BLECentralManager()
+    let password: Data?
     private var pollTimer: Timer?
 
     private var centralConnected = false
     private var peripheralConnected = false
+
+    init(password: Data?) {
+        self.password = password
+    }
 
     func start() {
         peripheralManager.delegate = self
         centralManager.delegate = self
 
         Logger.info("Starting bleclip...")
+        if password != nil {
+            Logger.info("Encryption enabled")
+        }
         Logger.info("Waiting for another bleclip instance nearby...")
 
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
@@ -55,13 +98,24 @@ class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
 
     private func checkClipboard() {
         guard let content = clipboardMonitor.checkForChange() else { return }
-        let data = content.toData()
+        var data = content.toData()
         switch content {
         case .text(let str):
             Logger.info("Sending text (\(str.count) chars)")
         case .image(let imgData):
             Logger.info("Sending image (\(imgData.count) bytes)")
         }
+
+        // Encrypt if secure mode
+        if let pw = password {
+            guard let encrypted = Crypto.encrypt(data, password: pw) else {
+                Logger.info("Encryption failed, skipping")
+                return
+            }
+            Logger.debug("Encrypted: \(data.count)B -> \(encrypted.count)B")
+            data = encrypted
+        }
+
         sendToRemote(data)
     }
 
@@ -75,7 +129,19 @@ class AppCoordinator: PeripheralManagerDelegate, CentralManagerDelegate {
     }
 
     private func receiveFromRemote(_ data: Data) {
-        guard let content = ClipboardContent.fromData(data) else {
+        var payload = data
+
+        // Decrypt if secure mode
+        if let pw = password {
+            guard let decrypted = Crypto.decrypt(payload, password: pw) else {
+                Logger.info("Decryption failed (wrong password or corrupted data), ignoring")
+                return
+            }
+            Logger.debug("Decrypted: \(payload.count)B -> \(decrypted.count)B")
+            payload = decrypted
+        }
+
+        guard let content = ClipboardContent.fromData(payload) else {
             Logger.debug("Failed to decode received clipboard data")
             return
         }
@@ -142,7 +208,7 @@ signal(SIGTERM) { _ in
 
 // MARK: - Main
 
-let coordinator = AppCoordinator()
+let coordinator = AppCoordinator(password: password)
 coordinator.start()
 
 RunLoop.main.run()
