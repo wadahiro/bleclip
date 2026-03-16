@@ -113,7 +113,8 @@ class BLECentralManager: NSObject, CBCentralManagerDelegate, CBPeripheralDelegat
         for char in characteristics where char.uuid == BLEConstants.characteristicUUID {
             clipCharacteristic = char
             peripheral.setNotifyValue(true, for: char)
-            Logger.info("Subscribed to clipboard characteristic")
+            let writeMTU = peripheral.maximumWriteValueLength(for: .withoutResponse)
+            Logger.info("Subscribed to clipboard characteristic (write MTU=\(writeMTU))")
             delegate?.centralDidConnect()
         }
     }

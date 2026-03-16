@@ -86,7 +86,7 @@ class BLEPeripheralManager: NSObject, CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
-        Logger.info("Central subscribed: \(central.identifier)")
+        Logger.info("Central subscribed: \(central.identifier) (notify MTU=\(central.maximumUpdateValueLength))")
         subscribedCentral = central
         stopAdvertising()
         delegate?.peripheralDidConnect()
